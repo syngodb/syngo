@@ -135,6 +135,13 @@ type Stats struct {
 	// Engine is the storage engine's own memory: the pages of its files it keeps, and the writes
 	// it has not yet moved to their final place.
 	Engine EngineStats
+	// Commits is what the database remembers of its last commits, which is what a transaction
+	// is checked against when it commits.
+	Commits CommitStats
+	// Transactions are the transactions that are kept open (Begin, BeginView).
+	Transactions TxStats
+	// Sorts are the answers put in order without an index.
+	Sorts SortStats
 }
 
 // CollectionStats is one collection of a Stats.
@@ -182,6 +189,48 @@ type CacheStats struct {
 	Hits, Misses uint64
 	// Evictions counts the documents pushed out of the cache to make room for others.
 	Evictions uint64
+}
+
+// CommitStats is what a database remembers of its commits, in a Stats. Transactions that expire
+// (Expired grows) are kept open for longer than the budget for them lasts: they are to be made
+// shorter, or the budget larger.
+type CommitStats struct {
+	// Remembered is the number of commits remembered at this moment, and Bytes the memory they
+	// take.
+	Remembered int
+	Bytes      int64
+	// Kept is the part of Bytes held beyond what the database always remembers, for the
+	// transactions that are kept open. KeptBudget is the most that may be held so, and KeptUsed
+	// what is: by this database, or by all the databases that share one memory.
+	Kept, KeptUsed, KeptBudget int64
+	// Expired counts, since the database was opened, the transactions that stayed open for
+	// longer than the commits made meanwhile could be remembered (ErrTxExpired).
+	Expired uint64
+}
+
+// TxStats is the transactions kept open of a Stats.
+type TxStats struct {
+	// Open is the number of transactions kept open at this moment, and Writing those among them
+	// that may write (the others only read, and cost nothing to follow).
+	Open, Writing int
+	// Limit is the most one of them may hold of what it read and wrote, in bytes, and Refused
+	// counts, since the database was opened, those that reached it (ErrTooLarge).
+	Limit   int64
+	Refused uint64
+}
+
+// SortStats is the sorting of a Stats. Sorts that go to disk (OnDisk grows) are slower than the
+// ones made in memory, and never fail: more memory for one sort, or for all of them together,
+// keeps them in memory.
+type SortStats struct {
+	// InMemory and OnDisk count, since the database was opened, the answers put in order in
+	// memory and the ones that had to be written to files, either because one sort outgrew what
+	// one may hold or because all of them together did.
+	InMemory, OnDisk uint64
+	// Each is the most one sort may hold in memory, and Budget the most all of them may hold
+	// together, in bytes: the sorts of this database, or of all the databases that share one
+	// memory. Used is what they hold at this moment.
+	Each, Budget, Used int64
 }
 
 // EngineStats is the storage engine of a Stats.
