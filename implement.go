@@ -334,8 +334,9 @@ type Write struct {
 	ExpireIn time.Duration
 	ExpireAt time.Time
 	// HasMeta says an option stated the metadata. Meta is then its JSON text, unchecked, or nil
-	// for none. Without HasMeta, a write that keeps what the document had keeps its metadata, and
-	// any other stores a document without.
+	// for none. A text that was given is never nil, not even one with nothing in it: that one is
+	// not JSON, and whoever checks the text refuses it. Without HasMeta, a write that keeps what
+	// the document had keeps its metadata, and any other stores a document without.
 	HasMeta bool
 	Meta    []byte
 }
@@ -358,11 +359,11 @@ func PlainWrite(options []WriteOption) (Write, error) {
 	switch v := meta.(type) {
 	case nil:
 	case []byte:
-		w.Meta = v
+		w.Meta = textGiven(v)
 	case json.RawMessage:
-		w.Meta = v
+		w.Meta = textGiven(v)
 	case string:
-		w.Meta = []byte(v)
+		w.Meta = textGiven([]byte(v))
 	default:
 		text, err := EncodeJSON(meta)
 		if err != nil {
@@ -371,6 +372,14 @@ func PlainWrite(options []WriteOption) (Write, error) {
 		w.Meta = text
 	}
 	return w, nil
+}
+
+// textGiven keeps a text that was given apart from no text: only the second is nil.
+func textGiven(text []byte) []byte {
+	if text == nil {
+		return []byte{}
+	}
+	return text
 }
 
 // DocumentInfo is what a database keeps about a document, beside its text.

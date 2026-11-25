@@ -282,6 +282,13 @@ func TestPlainWrite(t *testing.T) {
 			t.Errorf("Meta of a %s: %+v, %v", name, w, err)
 		}
 	}
+	// A text with nothing in it was given all the same: it is not "no metadata".
+	for name, empty := range map[string]any{"nil bytes": []byte(nil), "nil raw message": json.RawMessage(nil), "empty string": "", "empty bytes": []byte{}} {
+		w, err := PlainWrite([]WriteOption{Meta(empty)})
+		if err != nil || !w.HasMeta || w.Meta == nil || len(w.Meta) != 0 {
+			t.Errorf("Meta of %s: %+v, %v: want a text that is empty and not nil", name, w, err)
+		}
+	}
 	w, err = PlainWrite([]WriteOption{Meta(`{"a":1}`), Meta(nil)})
 	if err != nil || !w.HasMeta || w.Meta != nil {
 		t.Errorf("Meta(nil) removes: %+v, %v", w, err)
