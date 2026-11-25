@@ -171,7 +171,9 @@ type IndexStats struct {
 // one that would gain from a larger budget; one that pushes nothing out holds everything that is
 // being read.
 type CacheStats struct {
-	// Budget is the most the cache may hold, and Used what it holds, in bytes.
+	// Budget is the most the cache may hold, and Used what it holds, in bytes. When several
+	// databases share one cache, Budget is that of the cache they share and Used the part of it
+	// this database holds.
 	Budget, Used int64
 	// Hits and Misses count, since the database was opened, the documents asked for that the
 	// cache held and the ones that had to be read from the storage engine. A document a query

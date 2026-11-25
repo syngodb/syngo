@@ -198,9 +198,15 @@ type DB[C, T any] interface {
 	View(ctx context.Context, fn func(tx T) error) error
 	// Begin starts a transaction that the caller ends itself, with Commit or Rollback. Every
 	// transaction begun must be ended. Nothing is run again here: when Commit returns an error
-	// that is ErrConflict, nothing was written, and it is for the caller to begin again. Wherever
-	// the transaction fits in a function, Update is simpler and safer.
+	// that is ErrConflict, nothing was written, and it is for the caller to begin again. One
+	// that stays open for longer than the database can follow it is told so with ErrTxExpired,
+	// at its next write or at its commit. Wherever the transaction fits in a function, Update is
+	// simpler and safer.
 	Begin(ctx context.Context) (T, error)
+	// BeginView starts a transaction that only reads and that the caller ends itself, with
+	// Commit or Rollback: Begin for what View does. It reads the moment it began for as long as
+	// it is open, is checked against nothing, and never ends with a conflict.
+	BeginView(ctx context.Context) (T, error)
 
 	// Close ends the use of the database. Every later operation returns ErrClosed.
 	Close() error

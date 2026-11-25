@@ -64,7 +64,10 @@ func (db *fakeDB) View(ctx context.Context, fn func(tx *fakeTx) error) error {
 	return fn(&fakeTx{db: db})
 }
 func (db *fakeDB) Begin(ctx context.Context) (*fakeTx, error) { return &fakeTx{db: db}, nil }
-func (db *fakeDB) Close() error                               { db.closed = true; return nil }
+func (db *fakeDB) BeginView(ctx context.Context) (*fakeTx, error) {
+	return &fakeTx{db: db}, nil
+}
+func (db *fakeDB) Close() error { db.closed = true; return nil }
 
 func (tx *fakeTx) Collection(name string) *fakeCollection { return tx.db.Collection(name) }
 func (tx *fakeTx) Commit(ctx context.Context) error       { return nil }

@@ -56,6 +56,11 @@ var (
 	// database takes in one piece: a PutMany of that many documents, a transaction that wrote
 	// that much. Nothing of it is written; it is to be written in several commits.
 	ErrTooLarge = errors.New("syngo: too much to write in one commit")
+	// ErrCorrupt is what errors.Is finds in the error of whatever met, in the database, something
+	// that cannot be read as what it must be: the record of a document, an entry of an index, a
+	// count. Nothing a program writes makes it: the files of the database were damaged, or
+	// changed by something else. The error says what was met.
+	ErrCorrupt = errors.New("syngo: corrupt store")
 )
 
 // DuplicateError says which unique index refused a write, and which document holds the value.
