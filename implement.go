@@ -9,6 +9,7 @@ import (
 	"math"
 	"reflect"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -108,6 +109,56 @@ func (c Cond) Conds() []Cond {
 		return nil
 	}
 	return c.n.conds
+}
+
+// PlainCond makes a condition from its plain description: what Op, Negated, Field, Values,
+// Language and Conds say of one. It is for a server, which rebuilds the condition a driver
+// described to it. The values are JSON text and are kept as they are given: whoever answers the
+// query checks them, and they must not be changed afterwards.
+//
+// A description no function of this package could have made (an Op that is none, conditions
+// under a comparison, a value where none is taken) gives a condition with an error, which the
+// query it is given to fails with.
+func PlainCond(op Op, negated bool, field string, values [][]byte, language string, conds []Cond) Cond {
+	var c Cond
+	switch {
+	case op == OpAnd || op == OpOr:
+		if field != "" || len(values) != 0 || language != "" {
+			return Cond{err: &QueryError{Reason: "a combination of conditions has no field, no value and no language of its own"}}
+		}
+		c = group(op, conds)
+	case op >= OpEq && op <= OpMatchesAny:
+		if len(conds) != 0 {
+			return Cond{err: &QueryError{Reason: fmt.Sprintf("the comparison on %q has conditions under it", field)}}
+		}
+		takes := 1
+		switch op {
+		case OpExists, OpMissing:
+			takes = 0
+		case OpBetween:
+			takes = 2
+		case OpIn:
+			takes = len(values)
+		}
+		if len(values) != takes {
+			return Cond{err: &QueryError{Reason: fmt.Sprintf("the comparison on %q has %d values and takes %d", field, len(values), takes)}}
+		}
+		if language != "" {
+			if op != OpMatches && op != OpMatchesAny {
+				return Cond{err: &QueryError{Reason: fmt.Sprintf("the comparison on %q names a language, and only a full text search has one", field)}}
+			}
+			if strings.TrimSpace(language) == "" {
+				return Cond{err: &QueryError{Reason: "the language of a full text search is named, and this name is empty"}}
+			}
+		}
+		c = Cond{n: &condNode{op: op, field: field, values: values, language: language}}
+	default:
+		return Cond{err: &QueryError{Reason: fmt.Sprintf("a condition of a kind this version does not know (%d)", op)}}
+	}
+	if negated {
+		return Not(c)
+	}
+	return c
 }
 
 // Field is the path of the field the answer is ordered by, as the program wrote it. It is empty
@@ -404,4 +455,15 @@ func NewDocument(id string, text []byte, info DocumentInfo) *Document {
 		d.rare = &rareFacts{meta: info.Meta, expires: info.Expires}
 	}
 	return d
+}
+
+// DocumentParts is what NewDocument was given: the JSON text of a document and what the database
+// keeps about it, where they lie and without a copy. It is for an implementation that writes them
+// somewhere else, as a server does to its client. They are not to be changed.
+func DocumentParts(d *Document) (text []byte, info DocumentInfo) {
+	info = DocumentInfo{Revision: d.revision, Modified: d.modified}
+	if d.rare != nil {
+		info.Expires, info.Meta = d.rare.expires, d.rare.meta
+	}
+	return d.text, info
 }

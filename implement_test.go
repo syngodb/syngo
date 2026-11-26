@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"strings"
@@ -299,5 +300,98 @@ func TestPlainWrite(t *testing.T) {
 	// One that cannot be encoded and is replaced is never encoded.
 	if w, err := PlainWrite([]WriteOption{Meta(make(chan int)), Meta(1)}); err != nil || string(w.Meta) != "1" {
 		t.Errorf("the last Meta counts: %+v, %v", w, err)
+	}
+}
+
+// DocumentParts hands back what NewDocument was given, where it lies.
+func TestDocumentPartsAreWhatADocumentWasMadeOf(t *testing.T) {
+	text, meta := []byte(`{"_id":"u1","n":1}`), []byte(`{"by":"somebody"}`)
+	for name, info := range map[string]DocumentInfo{
+		"nothing beside the text": {},
+		"a revision and a time":   {Revision: 7, Modified: 1795500000000000000},
+		"a time to expire at":     {Revision: 1, Expires: 1795600000000000000},
+		"metadata":                {Revision: 2, Modified: 5, Meta: meta},
+		"everything":              {Revision: 3, Modified: 5, Expires: 9, Meta: meta},
+	} {
+		doc := NewDocument("u1", text, info)
+		gotText, got := DocumentParts(doc)
+		if &gotText[0] != &text[0] || len(gotText) != len(text) {
+			t.Errorf("%s: the text is a copy, or another text", name)
+		}
+		if got.Revision != info.Revision || got.Modified != info.Modified || got.Expires != info.Expires || string(got.Meta) != string(info.Meta) || (got.Meta == nil) != (info.Meta == nil) {
+			t.Errorf("%s: made of %+v, and its parts are %+v", name, info, got)
+		}
+	}
+}
+
+// described is a condition as its description says it, for comparing two of them.
+func described(c Cond) string {
+	if err := c.Err(); err != nil {
+		return "error: " + err.Error()
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "(%d neg=%v field=%q lang=%q values=[", c.Op(), c.Negated(), c.Field(), c.Language())
+	for _, v := range c.Values() {
+		fmt.Fprintf(&b, "%s;", v)
+	}
+	b.WriteString("] conds=[")
+	for _, sub := range c.Conds() {
+		b.WriteString(described(sub))
+	}
+	b.WriteString("])")
+	return b.String()
+}
+
+// rebuilt is a condition made again from nothing but its description, as a server makes it.
+func rebuilt(c Cond) Cond {
+	var conds []Cond
+	for _, sub := range c.Conds() {
+		conds = append(conds, rebuilt(sub))
+	}
+	return PlainCond(c.Op(), c.Negated(), c.Field(), c.Values(), c.Language(), conds)
+}
+
+// A condition rebuilt from its description is the same condition, whatever it was built with.
+func TestPlainCondRebuildsWhatWasDescribed(t *testing.T) {
+	for _, c := range []Cond{
+		{},
+		Eq("name", "Ada"), Ne("name", "Ada"), Gt("age", 30), Gte("age", 30), Lt("age", 30), Lte("age", 30.5),
+		Between("age", 20, 30), In("role", "admin", "owner"), In("role"), In("role", []int{1, 2, 3}),
+		Exists("email"), Missing("email"), Not(Exists("email")), Contains("tags", "a"),
+		StartsWith("name", "A"), EndsWith("name", "a"), Like("name", "a%"), Not(Like("name", "a%")),
+		Matches("body", "quick fox"), Matches("body", "quick fox", "de"), MatchesAny("body", "quick -fox", "none"),
+		And(), Or(), Not(And()), Not(Or()),
+		And(Eq("a", 1), Or(Eq("b", nil), Not(And(Gt("c", "x"), Lt("c", "z")))), Not(In("d", 1, 2))),
+		Not(Or(Eq("a", 1), Eq("a", 2))),
+		Eq("when", time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)),
+	} {
+		if got, want := described(rebuilt(c)), described(c); got != want {
+			t.Errorf("rebuilt as %s\n      from %s", got, want)
+		}
+	}
+	// What no function of the package makes is a condition with an error.
+	text := [][]byte{[]byte(`"x"`)}
+	for name, c := range map[string]Cond{
+		"a kind nobody knows":                PlainCond(99, false, "a", text, "", nil),
+		"the kind zero":                      PlainCond(0, false, "a", text, "", nil),
+		"a comparison without a value":       PlainCond(OpEq, false, "a", nil, "", nil),
+		"a comparison with two":              PlainCond(OpGt, false, "a", [][]byte{[]byte("1"), []byte("2")}, "", nil),
+		"a range with one end":               PlainCond(OpBetween, false, "a", text, "", nil),
+		"a field that is there, and a value": PlainCond(OpExists, false, "a", text, "", nil),
+		"conditions under a comparison":      PlainCond(OpEq, false, "a", text, "", []Cond{Eq("b", 1)}),
+		"a combination with a field":         PlainCond(OpAnd, false, "a", nil, "", []Cond{Eq("b", 1)}),
+		"a combination with a value":         PlainCond(OpOr, false, "", text, "", nil),
+		"a language on a comparison":         PlainCond(OpEq, false, "a", text, "de", nil),
+		"a language that is blank":           PlainCond(OpMatches, false, "a", text, "  ", nil),
+		"a condition with an error inside":   PlainCond(OpAnd, true, "", nil, "", []Cond{Eq("b", 1), PlainCond(99, false, "", nil, "", nil)}),
+	} {
+		var bad *QueryError
+		if !errors.As(c.Err(), &bad) || c.Op() != OpAnd || c.Field() != "" || c.Values() != nil || c.Conds() != nil {
+			t.Errorf("%s: %s", name, described(c))
+		}
+	}
+	// A combination of one is that one, and its negation the negation of that one.
+	if got, want := described(PlainCond(OpOr, true, "", nil, "", []Cond{Eq("a", 1)})), described(Ne("a", 1)); got != want {
+		t.Errorf("the negation of a combination of one condition is %s, and not %s", got, want)
 	}
 }

@@ -14,17 +14,28 @@ import (
 //
 // A condition is a description of what is asked, not the code that answers it: it means the same
 // to an embedded database and to a server. A condition that cannot be one (a value that cannot be
-// compared, a field name that is no path) makes every answer of the query it is given to fail
-// with a *QueryError.
+// compared, a field name that is no path, conditions combined deeper than MaxCondDepth) makes
+// every answer of the query it is given to fail with a *QueryError.
 type Cond struct {
 	n   *condNode
 	err error
 }
 
+// MaxCondDepth is how deep conditions can be combined in one another with And and Or. A
+// comparison is 0 deep, and a combination is one deeper than the deepest condition in it; Not
+// adds nothing. It is as deep as the text of a query nests, and as deep as a condition travels to
+// a server: a condition that an embedded database answers is one a server answers too.
+//
+// A program that adds to a condition in a loop, c = And(c, more), goes one deeper each time.
+// Collect the conditions and combine them once: And(conds...) is 1 deep however many they are.
+const MaxCondDepth = 200
+
 // condNode is what a condition says. It is never changed once made.
 type condNode struct {
-	op       Op
-	neg      bool
+	op  Op
+	neg bool
+	// depth is how deep the conditions under this one are combined: see MaxCondDepth.
+	depth    uint16
 	field    string
 	values   [][]byte
 	language string
@@ -190,9 +201,17 @@ func matches(op Op, field, expression string, language []string) Cond {
 }
 
 func group(op Op, conds []Cond) Cond {
+	depth := 0
 	for _, c := range conds {
 		if c.err != nil {
 			return Cond{err: c.err}
+		}
+		// One deeper than the deepest: the zero Cond and a comparison are 0 deep.
+		if depth == 0 {
+			depth = 1
+		}
+		if c.n != nil && int(c.n.depth) >= depth {
+			depth = int(c.n.depth) + 1
 		}
 	}
 	switch {
@@ -202,9 +221,11 @@ func group(op Op, conds []Cond) Cond {
 	case len(conds) == 0 && op == OpAnd:
 		// Every condition of none holds: it is the zero Cond.
 		return Cond{}
+	case depth > MaxCondDepth:
+		return Cond{err: &QueryError{Reason: fmt.Sprintf("the conditions are combined in one another more than %d deep", MaxCondDepth)}}
 	}
 	// The conditions are copied: the slice they came in is the caller's, to change at will.
-	return Cond{n: &condNode{op: op, conds: append([]Cond(nil), conds...)}}
+	return Cond{n: &condNode{op: op, depth: uint16(depth), conds: append([]Cond(nil), conds...)}}
 }
 
 // And holds when every condition holds. With no conditions it holds for every document.

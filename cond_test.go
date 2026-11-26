@@ -221,3 +221,115 @@ func TestOrders(t *testing.T) {
 		t.Errorf("Reverse changed the order it was called on")
 	}
 }
+
+// depthOf is how deep the conditions of one are combined, counted from what an implementation
+// reads: a condition without conditions under it is 0 deep.
+func depthOf(c Cond) int {
+	deepest := -1
+	for _, kid := range c.Conds() {
+		if d := depthOf(kid); d > deepest {
+			deepest = d
+		}
+	}
+	return deepest + 1
+}
+
+func TestConditionsCombineOnlySoDeep(t *testing.T) {
+	// chain combines a comparison in conditions, each around the one before, so many times.
+	chain := func(levels int, around func(i int, inner Cond) Cond) Cond {
+		c := Eq("n", 0)
+		for i := 1; i <= levels; i++ {
+			c = around(i, c)
+		}
+		return c
+	}
+	ways := map[string]func(i int, inner Cond) Cond{
+		"and": func(i int, inner Cond) Cond { return And(inner, Eq("n", i)) },
+		"or":  func(i int, inner Cond) Cond { return Or(Eq("n", i), inner) },
+		"one, then the other": func(i int, inner Cond) Cond {
+			if i%2 == 0 {
+				return And(inner, Gt("m", i))
+			}
+			return Or(inner, Lt("m", i))
+		},
+		"negated at every level": func(i int, inner Cond) Cond { return Not(And(Not(inner), Exists("x"))) },
+		"beside everything":      func(i int, inner Cond) Cond { return And(Cond{}, inner) },
+	}
+	for name, around := range ways {
+		deepest := chain(MaxCondDepth, around)
+		if err := deepest.Err(); err != nil {
+			t.Errorf("%s, %d deep: %v", name, MaxCondDepth, err)
+			continue
+		}
+		if got := depthOf(deepest); got != MaxCondDepth {
+			t.Errorf("%s: the condition reads %d deep, and was made %d deep", name, got, MaxCondDepth)
+		}
+		// What can be made can be described and made again: it is what travels to a server.
+		if again := rebuilt(deepest); again.Err() != nil || show(again) != show(deepest) {
+			t.Errorf("%s, %d deep, made again from its description: %v", name, MaxCondDepth, again.Err())
+		}
+		// Not adds nothing, and a group of one is that one.
+		if c := Not(And(Not(Or(deepest)))); c.Err() != nil || depthOf(c) != MaxCondDepth {
+			t.Errorf("%s: negated and alone in a group it is %d deep, %v", name, depthOf(c), c.Err())
+		}
+
+		deeper := around(MaxCondDepth+1, deepest)
+		var qe *QueryError
+		if err := deeper.Err(); !errors.As(err, &qe) || !errors.Is(err, ErrInvalidQuery) ||
+			qe.Reason != fmt.Sprintf("the conditions are combined in one another more than %d deep", MaxCondDepth) {
+			t.Errorf("%s, one deeper: %v", name, deeper.Err())
+		}
+		if deeper.Conds() != nil || deeper.Op() != OpAnd {
+			t.Errorf("%s: a condition that is too deep has nothing but its error", name)
+		}
+		// And the error comes through whatever is built on it.
+		if c := Or(Eq("a", 1), Not(deeper)); c.Err() != deeper.Err() {
+			t.Errorf("%s: the error did not come through: %v", name, c.Err())
+		}
+		// Described deeper than it can be, it is no condition either: PlainCond counts too.
+		if c := PlainCond(OpAnd, false, "", nil, "", []Cond{rebuilt(deepest), Eq("z", 1)}); !errors.Is(c.Err(), ErrInvalidQuery) {
+			t.Errorf("%s: a description one deeper was taken: %v", name, c.Err())
+		}
+	}
+
+	// It is the depth that is bounded, not the number of conditions: a loop that collects them
+	// and combines once is 1 deep, and two such under one another 2.
+	many := make([]Cond, 5000)
+	for i := range many {
+		many[i] = Eq("n", i)
+	}
+	if c := Or(many...); c.Err() != nil || depthOf(c) != 1 {
+		t.Errorf("5,000 conditions combined once: %d deep, %v", depthOf(c), c.Err())
+	}
+	if c := And(Or(many...), Or(many[:10]...), Eq("a", 1)); c.Err() != nil || depthOf(c) != 2 {
+		t.Errorf("two combinations under one: %d deep, %v", depthOf(c), c.Err())
+	}
+	// What is combined counts, whatever it is: everything, nothing, and their like are conditions
+	// one level down as a comparison is, though they have nothing under them.
+	and := func(i int, inner Cond) Cond { return And(inner, Eq("n", i)) }
+	for name, innermost := range map[string]Cond{
+		"everything twice":       Or(Cond{}, Cond{}),
+		"nothing and everything": And(Or(), And()),
+		"not everything, twice":  Or(Not(Cond{}), Not(Cond{})),
+	} {
+		if innermost.Err() != nil || depthOf(innermost) != 1 {
+			t.Fatalf("%s: %d deep, %v", name, depthOf(innermost), innermost.Err())
+		}
+		c := innermost
+		for i := 1; i < MaxCondDepth; i++ {
+			c = and(i, c)
+		}
+		if c.Err() != nil || depthOf(c) != MaxCondDepth {
+			t.Errorf("%s under %d combinations: %d deep, %v", name, MaxCondDepth-1, depthOf(c), c.Err())
+		}
+		if deeper := and(0, c); !errors.Is(deeper.Err(), ErrInvalidQuery) {
+			t.Errorf("%s under %d combinations was taken: %v", name, MaxCondDepth, deeper.Err())
+		}
+	}
+	// A combination of nothing, by itself, is as deep as a comparison.
+	for name, c := range map[string]Cond{"everything": And(), "nothing": Or(), "not everything": Not(Cond{})} {
+		if c.Err() != nil || depthOf(c) != 0 {
+			t.Errorf("%s: %d deep, %v", name, depthOf(c), c.Err())
+		}
+	}
+}
